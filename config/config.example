@@ -1,0 +1,24 @@
+# Copy to ~/.config/remote-dev-tunnel/config and edit locally.
+# Do not commit your personal config.
+
+# SSH alias from ~/.ssh/config (not a raw IP or username).
+SSH_HOST="my-remote-server"
+
+# Local proxy listener on your Mac.
+LOCAL_PROXY_HOST="127.0.0.1"
+LOCAL_PROXY_PORT="8080"
+
+# Port bound to 127.0.0.1 on the remote host.
+REMOTE_TUNNEL_PORT="8080"
+
+# A URL that can be reached through your proxy.
+PROXY_TEST_URL="https://example.com/"
+
+# Default remote working directory.
+REMOTE_WORKDIR="$HOME"
+
+# Command run by `remote-dev-tunnel codex`.
+REMOTE_CLI_COMMAND="codex"
+
+# Optional absolute path to VS Code CLI; otherwise searched in PATH.
+VSCODE_CLI=""

@@ -1,0 +1,14 @@
+# Personal config and secrets
+config/config.local
+config/*.private
+.env
+.env.*
+*.pem
+*.key
+id_rsa
+id_ed25519
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/

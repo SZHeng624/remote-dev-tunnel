@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+CONFIG_FILE="${RDT_CONFIG:-$HOME/.config/remote-dev-tunnel/config}"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  remote-dev-tunnel status
+  remote-dev-tunnel tunnel
+  remote-dev-tunnel vscode [remote-path]
+  remote-dev-tunnel codex [remote-path]
+  remote-dev-tunnel help
+
+Config: ~/.config/remote-dev-tunnel/config
+Override with RDT_CONFIG=/path/to/config.
+USAGE
+}
+
+die() { echo "Error: $*" >&2; exit 1; }
+
+[[ -f "$CONFIG_FILE" ]] || die "Config not found: $CONFIG_FILE. Copy config/config.example to ~/.config/remote-dev-tunnel/config and edit it."
+# shellcheck source=/dev/null
+source "$CONFIG_FILE"
+
+: "${SSH_HOST:?Set SSH_HOST in your config}"
+: "${LOCAL_PROXY_HOST:=127.0.0.1}"
+: "${LOCAL_PROXY_PORT:=8080}"
+: "${REMOTE_TUNNEL_PORT:=8080}"
+: "${PROXY_TEST_URL:=https://example.com/}"
+: "${REMOTE_WORKDIR:=$HOME}"
+: "${REMOTE_CLI_COMMAND:=codex}"
+: "${VSCODE_CLI:=}"
+
+SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=8 -o ServerAliveInterval=30 -o ServerAliveCountMax=3)
+REMOTE_PROXY_URL="http://127.0.0.1:${REMOTE_TUNNEL_PORT}"
+
+check_local_proxy() {
+  nc -z -w 2 "$LOCAL_PROXY_HOST" "$LOCAL_PROXY_PORT" >/dev/null 2>&1
+}
+check_ssh() {
+  ssh "${SSH_OPTS[@]}" "$SSH_HOST" true >/dev/null 2>&1
+}
+check_remote_proxy() {
+  ssh "${SSH_OPTS[@]}" "$SSH_HOST" \
+    "curl -sS -o /dev/null --connect-timeout 5 --max-time 12 -x '${REMOTE_PROXY_URL}' '${PROXY_TEST_URL}'" \
+    >/dev/null 2>&1
+}
+ensure_tunnel() {
+  check_local_proxy || die "Local proxy is not listening at ${LOCAL_PROXY_HOST}:${LOCAL_PROXY_PORT}. Start your local proxy first."
+  check_ssh || die "SSH connection to '${SSH_HOST}' failed. Test the SSH alias directly."
+
+  if check_remote_proxy; then
+    echo "Reverse tunnel is already working."
+    return
+  fi
+
+  echo "Creating SSH reverse tunnel..."
+  ssh -f -N \
+    -o BatchMode=yes -o ConnectTimeout=8 -o ExitOnForwardFailure=yes \
+    -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+    -R "127.0.0.1:${REMOTE_TUNNEL_PORT}:${LOCAL_PROXY_HOST}:${LOCAL_PROXY_PORT}" \
+    "$SSH_HOST" || die "Could not create the SSH reverse tunnel."
+
+  for _ in {1..12}; do
+    if check_remote_proxy; then
+      echo "Reverse tunnel is ready."
+      return
+    fi
+    sleep 1
+  done
+  die "Tunnel started, but remote proxy connectivity was not verified. Check forwarding permissions, ports, and proxy settings."
+}
+show_status() {
+  echo "Remote Dev Tunnel status"
+  if check_local_proxy; then echo "Local proxy:  OK (${LOCAL_PROXY_HOST}:${LOCAL_PROXY_PORT})"; else echo "Local proxy:  NOT AVAILABLE"; fi
+  if check_ssh; then echo "SSH:          OK (${SSH_HOST})"; else echo "SSH:          NOT AVAILABLE"; fi
+  if check_ssh && check_remote_proxy; then echo "Remote proxy: OK (${REMOTE_PROXY_URL})"; else echo "Remote proxy: NOT VERIFIED"; fi
+}
+open_vscode() {
+  local remote_path="${1:-$REMOTE_WORKDIR}"
+  ensure_tunnel
+  local folder_uri="vscode-remote://ssh-remote+${SSH_HOST}${remote_path}"
+  local code_cmd="$VSCODE_CLI"
+  [[ -n "$code_cmd" ]] || code_cmd="$(command -v code || true)"
+  if [[ -n "$code_cmd" ]]; then
+    "$code_cmd" --new-window --folder-uri "$folder_uri"
+    echo "Requested VS Code workspace: $remote_path"
+  elif [[ "$(uname -s)" == "Darwin" ]]; then
+    open -a "Visual Studio Code" || die "Could not open Visual Studio Code."
+    echo "Run Remote-SSH: Connect to Host... and select ${SSH_HOST}."
+  else
+    die "VS Code CLI 'code' not found. Set VSCODE_CLI in config."
+  fi
+}
+run_remote_cli() {
+  local remote_path="${1:-$REMOTE_WORKDIR}"
+  ensure_tunnel
+  local quoted_path
+  printf -v quoted_path '%q' "$remote_path"
+  echo "Starting remote command in ${remote_path}: ${REMOTE_CLI_COMMAND}"
+  ssh -t "${SSH_OPTS[@]}" "$SSH_HOST" "cd ${quoted_path} && exec ${REMOTE_CLI_COMMAND}"
+}
+
+cmd="${1:-help}"
+shift || true
+case "$cmd" in
+  help|-h|--help) usage ;;
+  status) show_status ;;
+  tunnel) ensure_tunnel ;;
+  vscode) open_vscode "${1:-}" ;;
+  codex) run_remote_cli "${1:-}" ;;
+  *) usage; die "Unknown command: $cmd" ;;
+esac
